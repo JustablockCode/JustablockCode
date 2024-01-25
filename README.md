@@ -1,6 +1,6 @@
 - 👋 Hi, I’m @JustablockCode
-- 👀 I’m interested in coding html,discord.py,python and creating mods to minecraft
-- 🌱 I’m currently learning sqlite 3
+- 👀 I’m interested in coding: html,discord.py,python,javascript and css.
+- 🌱 I’m currently learning: css
 
 <!---
 JustablockCode/JustablockCode is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
