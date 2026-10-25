@@ -1,41 +1,41 @@
 #!/usr/bin/env bash
-# Run this launcher INSIDE a Crave Devspace clone directory.
-# The source synchronization and compilation happen in a queued crave run job,
-# NEVER in Devspace itself.
-set -euo pipefail
+# LineageOS 23.2 (Android 16) for Xiaomi Redmi 9 (lancelot)
+# RUNS ON A CRAVE BUILD WORKER, via: crave run --no-patch -- "curl ... && bash ..."
+# Do not run this directly in Devspace or on your laptop.
+set -Eeo pipefail  # Android envsetup.sh may reference unset variables
 
-if ! command -v crave >/dev/null 2>&1; then
-  echo 'ERROR: crave CLI is missing.' >&2
+trap 'printf "\n[ERROR] Build failed at line %s (exit code %s)\n" "$LINENO" "$?" >&2' ERR
+
+ROM_BRANCH="lineage-23.2"
+DEVICE="lancelot"
+OUT_DIR="out/target/product/${DEVICE}"
+
+printf '\n=== LineageOS 23.2 for %s: Crave worker build ===\n' "$DEVICE"
+if [[ ! -d .repo ]]; then
+  echo 'ERROR: Expected to run in the Crave LOS 23.2 source root (.repo not found).' >&2
   exit 1
 fi
-if [ ! -d .repo ]; then
-  echo 'ERROR: cd into your Crave clone directory (with .repo) first.' >&2
-  echo 'For example: cd /crave-devspaces/Lineage23' >&2
-  exit 1
-fi
 
-BUILD_COMMAND="$(cat <<'CRAVE_BUILD_JOB'
-set -eo pipefail
+# Use the same LineageOS 23.2 manifest source as Crave project 99.
+# Shallow history reduces unnecessary downloads; Git LFS is needed for vendor blobs.
+echo '==> Initializing LineageOS 23.2 manifest'
+repo init -u https://github.com/accupara/los23.2.git -b "$ROM_BRANCH" --git-lfs --depth=1
 
-echo '===== LineageOS 23.2 for Redmi 9 (lancelot) ====='
-echo 'Source init and build are running in a Crave build job.'
-
-repo init -u https://github.com/LineageOS/android.git -b lineage-23.2 --git-lfs
-
+# A dedicated local manifest for the eight lancelot repositories.
+# Do not silently delete unrelated manifests in a reused workspace.
 mkdir -p .repo/local_manifests
-# Do not silently overwrite other device manifests, which may cause duplicate projects.
-for existing in .repo/local_manifests/*.xml; do
-  [ -e "$existing" ] || continue
-  if [ "$existing" != '.repo/local_manifests/lancelot.xml' ]; then
-    echo "ERROR: Existing local manifest $existing. Review/remove conflicts before re-running." >&2
+for other in .repo/local_manifests/*.xml; do
+  [[ -e "$other" ]] || continue
+  if [[ "$other" != .repo/local_manifests/lancelot.xml ]]; then
+    echo "ERROR: Another local manifest exists: $other" >&2
+    echo 'Check it for conflicts before rebuilding.' >&2
     exit 1
   fi
 done
 
-cat > .repo/local_manifests/lancelot.xml <<'LANCELOT_XML'
+cat > .repo/local_manifests/lancelot.xml <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
-  <!-- Redmi 9 (lancelot), LineageOS 23.2 / Android 16 -->
   <project name="LineageOS/android_device_xiaomi_lancelot" path="device/xiaomi/lancelot" revision="lineage-23.2" clone-depth="1" />
   <project name="LineageOS/android_device_xiaomi_mt6768-common" path="device/xiaomi/mt6768-common" revision="lineage-23.2" clone-depth="1" />
   <project name="LineageOS/android_device_mediatek_sepolicy_vndr" path="device/mediatek/sepolicy_vndr" revision="lineage-23.2" clone-depth="1" />
@@ -45,44 +45,51 @@ cat > .repo/local_manifests/lancelot.xml <<'LANCELOT_XML'
   <project name="TheMuppets/proprietary_vendor_xiaomi_lancelot" path="vendor/xiaomi/lancelot" revision="lineage-23.2" clone-depth="1" />
   <project name="TheMuppets/proprietary_vendor_xiaomi_mt6768-common" path="vendor/xiaomi/mt6768-common" revision="lineage-23.2" clone-depth="1" />
 </manifest>
-LANCELOT_XML
+XML
 
-if [ ! -x /opt/crave/resync.sh ]; then
-  echo 'ERROR: /opt/crave/resync.sh unavailable in this Crave image.' >&2
+echo '==> Syncing source with Crave resync helper'
+if [[ ! -f /opt/crave/resync.sh ]]; then
+  echo 'ERROR: /opt/crave/resync.sh is missing on this worker.' >&2
   exit 1
 fi
-/opt/crave/resync.sh
+bash /opt/crave/resync.sh
 
-# Sanity checks after sync
-for tree in device/xiaomi/lancelot device/xiaomi/mt6768-common \
-  kernel/xiaomi/mt6768 vendor/xiaomi/lancelot vendor/xiaomi/mt6768-common; do
-  if [ ! -d "$tree" ]; then
-    echo "ERROR: Expected tree not synced: $tree" >&2
+# Verify key trees after sync (fail now rather than with a confusing build error).
+for tree in \
+  device/xiaomi/lancelot \
+  device/xiaomi/mt6768-common \
+  device/mediatek/sepolicy_vndr \
+  hardware/mediatek \
+  hardware/xiaomi \
+  kernel/xiaomi/mt6768 \
+  vendor/xiaomi/lancelot \
+  vendor/xiaomi/mt6768-common; do
+  if [[ ! -d "$tree" ]]; then
+    echo "ERROR: Missing source directory after sync: $tree" >&2
     exit 1
   fi
 done
 
+echo '==> Configuring build environment'
 source build/envsetup.sh
-lunch lineage_lancelot-bp4a-userdebug
+lunch "lineage_${DEVICE}-bp4a-userdebug"
+
+echo '==> Building LineageOS OTA ZIP'
+# Do not clean the entire out/ directory: Crave expects incremental builds.
 m bacon
 
-OUTPUT_DIR=out/target/product/lancelot
+echo '==> Listing build artifacts'
 shopt -s nullglob
-roms=("$OUTPUT_DIR"/lineage-23.2-*.zip)
-if [ ${#roms[@]} -eq 0 ]; then
-  echo "ERROR: Build command completed but no LineageOS 23.2 zip found in $OUTPUT_DIR" >&2
+roms=("$OUT_DIR"/lineage-23.2-*-"$DEVICE".zip)
+if (( ${#roms[@]} == 0 )); then
+  echo "ERROR: Build finished but ROM ZIP not found in $OUT_DIR" >&2
   exit 1
 fi
-printf '===== ROM packages =====\n'
-ls -lh "${roms[@]}"
-sha256sum "${roms[@]}" | tee "$OUTPUT_DIR/SHA256SUMS-lancelot.txt"
-if [ -f "$OUTPUT_DIR/recovery.img" ]; then
-  ls -lh "$OUTPUT_DIR/recovery.img"
-fi
-printf '===== Build successful =====\n'
-CRAVE_BUILD_JOB
-)"
 
-# Do not use --clean unless Crave staff authorizes it.
-# --no-patch follows Crave's documented sample commands.
-crave run --no-patch -- "$BUILD_COMMAND"
+ls -lh "${roms[@]}"
+images=()
+[[ -f "$OUT_DIR/recovery.img" ]] && images+=("$OUT_DIR/recovery.img")
+((${#images[@]} == 0)) || ls -lh "${images[@]}"
+
+sha256sum "${roms[@]}" "${images[@]}" | tee "$OUT_DIR/SHA256SUMS-lancelot.txt"
+echo '=== Build finished; use crave pull from Devspace to retrieve outputs ==='
