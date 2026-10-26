@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Experimental BlissRoms Xylobium (Android 17) for Redmi 9 (lancelot).
 # Execute ONLY inside a queued Crave build worker, not in Devspace.
-# Use an Android 17 Crave base only; verify its configured branch first.
-# PixelOS (ID 82) is a candidate; DerpFest-aosp (ID 64) is not verified.
+# Crave base: LOS 23.2 (ID 99, Android 16); the worker switches to Bliss Android 17.
+# Unsupported cross-version build. FOSSonTop recommends matching Android base versions.
+# Use a SEPARATE Crave clone at /crave-devspaces/Bliss20, never the working Lineage23 clone.
 set -Eeo pipefail
 trap 'echo "[ERROR] Bliss build failed at line $LINENO (status $?)" >&2' ERR
 
@@ -14,17 +15,16 @@ echo '=== Experimental BlissRoms Android 17 build for lancelot ==='
 [[ -d .repo ]] || { echo 'Missing .repo; run from the Crave clone root' >&2; exit 1; }
 [[ -f /opt/crave/resync.sh ]] || { echo 'Missing /opt/crave/resync.sh' >&2; exit 1; }
 
-# FOSSonTop requires Android 17 source to be built on an Android 17 base.
-# Inspect the checkout's EXISTING project manifest BEFORE changing ROMs.
-# A GitHub repo's default branch does not prove Crave's configured branch.
-if [[ ! -f .repo/manifests/default.xml ]] || \
-   ! grep -Eq 'android-17[.]0[.]0|lineage-24[.]0|revision="seventeen"|refs/heads/seventeen' \
-     .repo/manifests/default.xml; then
-  echo 'ERROR: Could not verify that this Crave base project is Android 17.' >&2
-  echo 'Check .repo/manifests/default.xml and choose a Crave Android 17 project.' >&2
-  echo 'Aborting BEFORE repo init/resync to respect the unsupported-ROM guide.' >&2
+# Guard against accidentally overwriting the user's known-good Lineage23 worker.
+# This MUST be a separate clone of the LOS 23.2 base project (ID 99).
+if [[ "${PWD##*/}" != "Bliss20" ]]; then
+  echo 'ERROR: Run from /crave-devspaces/Bliss20, NOT Lineage23.' >&2
+  echo 'Create a separate LOS 23.2 clone and queue the build from that directory.' >&2
   exit 1
 fi
+# Only the queued worker is allowed to reinitialize/sync the Bliss sources.
+echo 'WARNING: Switching an Android 16 Crave base to Android 17 is experimental.'
+echo 'Ensure Crave permits this Android-version mismatch before queueing.'
 
 # The Bliss stable manifest uses SSH URLs for public GitHub repos.
 # Rewrite these public URLs to HTTPS so worker SSH keys are not required.
