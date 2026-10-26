@@ -92,4 +92,24 @@ images=()
 ((${#images[@]} == 0)) || ls -lh "${images[@]}"
 
 sha256sum "${roms[@]}" "${images[@]}" | tee "$OUT_DIR/SHA256SUMS-lancelot.txt"
+# Optional Telegram backup. No changes to the tested build steps above.
+echo '==> Optional Telegram Saved Messages upload'
+if [[ "${TG_AUTO_UPLOAD:-1}" != "0" ]] && \
+   [[ -s "$HOME/.config/telegram-upload.json" ]] && \
+   [[ -s "$HOME/.config/telegram-upload.session" ]]; then
+  if command -v telegram-upload >/dev/null 2>&1; then
+    # Telegram Free limit is 2 GiB; split larger ZIPs automatically.
+    if telegram-upload --to me --large-files split --force-file \
+        "${roms[@]}" "${images[@]}" "$OUT_DIR/SHA256SUMS-lancelot.txt"; then
+      echo 'Telegram upload completed.'
+    else
+      echo 'WARNING: Telegram upload failed; ROM remains available via crave pull.'
+    fi
+  else
+    echo 'Telegram upload skipped: telegram-upload is not installed on worker.'
+  fi
+else
+  echo 'Telegram upload skipped: missing worker credentials or TG_AUTO_UPLOAD=0.'
+fi
+
 echo '=== Build finished; use crave pull from Devspace to retrieve outputs ==='
