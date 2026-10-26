@@ -97,16 +97,31 @@ echo '==> Optional Telegram Saved Messages upload'
 if [[ "${TG_AUTO_UPLOAD:-1}" != "0" ]] && \
    [[ -s "$HOME/.config/telegram-upload.json" ]] && \
    [[ -s "$HOME/.config/telegram-upload.session" ]]; then
-  if command -v telegram-upload >/dev/null 2>&1; then
+  tg_bin="$(command -v telegram-upload || true)"
+  if [[ -z "$tg_bin" ]]; then
+    tg_venv="$HOME/.local/share/telegram-upload-venv"
+    if [[ ! -x "$tg_venv/bin/telegram-upload" ]]; then
+      echo 'Installing telegram-upload in a user-local Python environment.'
+      if command -v python3 >/dev/null 2>&1 && \
+         python3 -m venv "$tg_venv" && \
+         "$tg_venv/bin/python" -m pip install -q -U telegram-upload; then
+        echo 'telegram-upload installed.'
+      else
+        echo 'WARNING: telegram-upload installation failed; skipping upload.'
+      fi
+    fi
+    [[ ! -x "$tg_venv/bin/telegram-upload" ]] || tg_bin="$tg_venv/bin/telegram-upload"
+  fi
+  if [[ -n "$tg_bin" ]]; then
     # Telegram Free limit is 2 GiB; split larger ZIPs automatically.
-    if telegram-upload --to me --large-files split --force-file \
+    if "$tg_bin" --to me --large-files split --force-file \
         "${roms[@]}" "${images[@]}" "$OUT_DIR/SHA256SUMS-lancelot.txt"; then
       echo 'Telegram upload completed.'
     else
       echo 'WARNING: Telegram upload failed; ROM remains available via crave pull.'
     fi
   else
-    echo 'Telegram upload skipped: telegram-upload is not installed on worker.'
+    echo 'Telegram upload skipped: executable is unavailable.'
   fi
 else
   echo 'Telegram upload skipped: missing worker credentials or TG_AUTO_UPLOAD=0.'
