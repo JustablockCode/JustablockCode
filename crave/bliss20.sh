@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Experimental BlissRoms Xylobium (Android 17) for Redmi 9 (lancelot).
 # Execute ONLY inside a queued Crave build worker, not in Devspace.
-# Base Crave project: DerpFest-aosp (ID 64).
+# Use an Android 17 Crave base only; verify its configured branch first.
+# PixelOS (ID 82) is a candidate; DerpFest-aosp (ID 64) is not verified.
 set -Eeo pipefail
 trap 'echo "[ERROR] Bliss build failed at line $LINENO (status $?)" >&2' ERR
 
@@ -12,6 +13,18 @@ BLISS_TAG=refs/tags/v20.1-stable-xylobium
 echo '=== Experimental BlissRoms Android 17 build for lancelot ==='
 [[ -d .repo ]] || { echo 'Missing .repo; run from the Crave clone root' >&2; exit 1; }
 [[ -f /opt/crave/resync.sh ]] || { echo 'Missing /opt/crave/resync.sh' >&2; exit 1; }
+
+# FOSSonTop requires Android 17 source to be built on an Android 17 base.
+# Inspect the checkout's EXISTING project manifest BEFORE changing ROMs.
+# A GitHub repo's default branch does not prove Crave's configured branch.
+if [[ ! -f .repo/manifests/default.xml ]] || \
+   ! grep -Eq 'android-17[.]0[.]0|lineage-24[.]0|revision="seventeen"|refs/heads/seventeen' \
+     .repo/manifests/default.xml; then
+  echo 'ERROR: Could not verify that this Crave base project is Android 17.' >&2
+  echo 'Check .repo/manifests/default.xml and choose a Crave Android 17 project.' >&2
+  echo 'Aborting BEFORE repo init/resync to respect the unsupported-ROM guide.' >&2
+  exit 1
+fi
 
 # The Bliss stable manifest uses SSH URLs for public GitHub repos.
 # Rewrite these public URLs to HTTPS so worker SSH keys are not required.
