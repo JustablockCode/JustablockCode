@@ -15,15 +15,11 @@ echo '=== Experimental BlissRoms Android 17 build for lancelot ==='
 [[ -d .repo ]] || { echo 'Missing .repo; run from the Crave clone root' >&2; exit 1; }
 [[ -f /opt/crave/resync.sh ]] || { echo 'Missing /opt/crave/resync.sh' >&2; exit 1; }
 
-# Guard against accidentally overwriting the user's known-good Lineage23 worker.
-# This MUST be a separate clone of the LOS 23.2 base project (ID 99).
-if [[ "${PWD##*/}" != "Bliss20" ]]; then
-  echo 'ERROR: Run from /crave-devspaces/Bliss20, NOT Lineage23.' >&2
-  echo 'Create a separate LOS 23.2 clone and queue the build from that directory.' >&2
-  exit 1
-fi
-# Only the queued worker is allowed to reinitialize/sync the Bliss sources.
-echo 'WARNING: Switching an Android 16 Crave base to Android 17 is experimental.'
+# Crave mounts the selected clone as its worker workspace; its basename is NOT
+# required to equal the Devspace clone folder. We already checked for .repo.
+# Choose /crave-devspaces/Bliss20 in Devspace BEFORE calling crave run.
+echo "==> Crave worker source root: $(pwd -P)"
+echo 'WARNING: Android 16 Crave base to Bliss Android 17 is experimental.'
 echo 'Ensure Crave permits this Android-version mismatch before queueing.'
 
 # The Bliss stable manifest uses SSH URLs for public GitHub repos.
