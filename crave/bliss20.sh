@@ -68,6 +68,46 @@ for tree in \
   [[ -d "$tree" ]] || { echo "Missing synced tree: $tree" >&2; exit 1; }
 done
 
+# Fail early if expected Bliss/Lineage integration points have changed.
+# These paths and modules were checked against Bliss 20.1 Xylobium and
+# LineageOS 24.0; failing clearly is safer than silently broken sed commands.
+echo '==> Checking Bliss/Lineage port prerequisites'
+for required in \
+  device/xiaomi/lancelot/lineage_lancelot.mk \
+  device/xiaomi/lancelot/AndroidProducts.mk \
+  device/xiaomi/mt6768-common/mt6768.mk \
+  device/xiaomi/mt6768-common/BoardConfigCommon.mk \
+  vendor/bliss/config/common_full_phone.mk \
+  vendor/bliss/config/BoardConfigReservedSize.mk \
+  vendor/bliss/vars/aosp_target_release \
+  vendor/bliss/build/envsetup.sh \
+  vendor/bliss/build/tasks/blissify.mk \
+  device/bliss/sepolicy/libion/sepolicy.mk \
+  hardware/bliss/interfaces/health/aidl/default/Android.bp \
+  hardware/bliss/interfaces/light/Android.bp \
+  hardware/bliss/interfaces/power-libperfmgr/Android.bp \
+  hardware/lineage/compat/frameworks/compat.mk; do
+  [[ -f "$required" ]] || { echo "ERROR: Missing required file: $required" >&2; exit 1; }
+done
+
+require_source_text() {
+  local needle="$1" file="$2"
+  grep -Fq -- "$needle" "$file" || {
+    echo "ERROR: Expected upstream text not found: $needle in $file" >&2
+    exit 1
+  }
+}
+require_source_text 'aosp_target_release=cp2a' vendor/bliss/vars/aosp_target_release
+require_source_text 'PRODUCT_NAME := lineage_lancelot' device/xiaomi/lancelot/lineage_lancelot.mk
+require_source_text 'vendor/lineage/config/common_full_phone.mk' device/xiaomi/lancelot/lineage_lancelot.mk
+require_source_text 'lineage_lancelot.mk' device/xiaomi/lancelot/AndroidProducts.mk
+require_source_text 'hardware/lineage/interfaces/power-libperfmgr' device/xiaomi/mt6768-common/mt6768.mk
+require_source_text 'device/lineage/sepolicy/libion/sepolicy.mk' device/xiaomi/mt6768-common/BoardConfigCommon.mk
+require_source_text 'vendor/lineage/config/BoardConfigReservedSize.mk' device/xiaomi/mt6768-common/BoardConfigCommon.mk
+require_source_text 'name: "vendor.lineage.health-service.default"' hardware/bliss/interfaces/health/aidl/default/Android.bp
+require_source_text 'name: "android.hardware.light-service.lineage"' hardware/bliss/interfaces/light/Android.bp
+require_source_text 'name: "android.hardware.power-service.lineage-libperfmgr"' hardware/bliss/interfaces/power-libperfmgr/Android.bp
+
 # The upstream Lineage device product must inherit Bliss configuration and
 # advertise bliss_lancelot before Bliss's breakfast/blissify can select it.
 PRODUCT_TREE=device/xiaomi/lancelot
@@ -91,14 +131,30 @@ sed -i \
 grep -q 'PRODUCT_NAME := bliss_lancelot' "$PRODUCT_TREE/bliss_lancelot.mk"
 grep -q 'vendor/bliss/config/common_full_phone.mk' "$PRODUCT_TREE/bliss_lancelot.mk"
 grep -q 'bliss_lancelot.mk' "$PRODUCT_TREE/AndroidProducts.mk"
+require_source_text 'hardware/bliss/interfaces/power-libperfmgr' "$COMMON_TREE/mt6768.mk"
+require_source_text 'device/bliss/sepolicy/libion/sepolicy.mk' "$COMMON_TREE/BoardConfigCommon.mk"
+require_source_text 'vendor/bliss/config/BoardConfigReservedSize.mk' "$COMMON_TREE/BoardConfigCommon.mk"
 
-echo '==> Building BlissRoms vanilla'
+echo '==> Building BlissRoms vanilla (userdebug)'
 source build/envsetup.sh
+if [[ "$(type -t blissify || true)" != function ]]; then
+  echo 'ERROR: Bliss build function was not loaded by build/envsetup.sh' >&2
+  exit 1
+fi
+# Bliss's published wrapper checks TARGET_BUILD_VARIANT before breakfast;
+# assigning it avoids an empty unquoted [ ] conditional in their script.
+export TARGET_BUILD_VARIANT=userdebug
 blissify -v lancelot
 
 shopt -s nullglob
-roms=("$OUT_DIR"/Bliss*.zip)
-(( ${#roms[@]} > 0 )) || { echo "No Bliss ZIP in $OUT_DIR" >&2; exit 1; }
+roms=("$OUT_DIR"/Bliss-v20.1-"$DEVICE"-*.zip)
+(( ${#roms[@]} > 0 )) || { echo "No Bliss v20.1 ZIP in $OUT_DIR" >&2; exit 1; }
+# Do not accidentally upload an old ZIP left by a prior run.
+newest_rom="${roms[0]}"
+for candidate in "${roms[@]:1}"; do
+  [[ "$candidate" -nt "$newest_rom" ]] && newest_rom="$candidate"
+done
+roms=("$newest_rom")
 
 images=()
 [[ ! -f "$OUT_DIR/recovery.img" ]] || images+=("$OUT_DIR/recovery.img")
