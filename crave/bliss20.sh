@@ -22,11 +22,13 @@ echo "==> Crave worker source root: $(pwd -P)"
 echo 'WARNING: Android 16 Crave base to Bliss Android 17 is experimental.'
 echo 'Ensure Crave permits this Android-version mismatch before queueing.'
 
-# The Bliss stable manifest uses SSH URLs for public GitHub repos.
-# Rewrite these public URLs to HTTPS so worker SSH keys are not required.
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=url.https://github.com/BlissRoms/.insteadOf
-export GIT_CONFIG_VALUE_0=ssh://git@github.com/BlissRoms/
+# Rewrite public GitHub SSH remotes to HTTPS. This also avoids an
+# interactive "Are you sure you want to continue connecting?" prompt in workers.
+export GIT_CONFIG_COUNT=2
+export GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf
+export GIT_CONFIG_VALUE_0=ssh://git@github.com/
+export GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf
+export GIT_CONFIG_VALUE_1=git@github.com:
 
 echo '==> Initializing official BlissRoms 20.1 stable manifest'
 repo init -u https://github.com/BlissRoms/stable_releases.git \
@@ -136,15 +138,44 @@ require_source_text 'device/bliss/sepolicy/libion/sepolicy.mk' "$COMMON_TREE/Boa
 require_source_text 'vendor/bliss/config/BoardConfigReservedSize.mk' "$COMMON_TREE/BoardConfigCommon.mk"
 
 echo '==> Building BlissRoms vanilla (userdebug)'
-source build/envsetup.sh
-if [[ "$(type -t blissify || true)" != function ]]; then
-  echo 'ERROR: Bliss build function was not loaded by build/envsetup.sh' >&2
-  exit 1
+# Crave's baseline image intentionally leaves out ccache and ships a passthrough
+# replacement. Bliss 20.1 checks CCACHE_EXEC when sourcing envsetup.sh.
+if [[ -x /opt/crave/not_ccache.sh ]]; then
+  export CCACHE_EXEC=/opt/crave/not_ccache.sh
+  export USE_CCACHE=0
+  echo 'Using the official Crave no-ccache wrapper.'
+else
+  echo 'WARNING: Crave no-ccache wrapper not found; Bliss may warn about ccache.'
 fi
-# Bliss's published wrapper checks TARGET_BUILD_VARIANT before breakfast;
-# assigning it avoids an empty unquoted [ ] conditional in their script.
-export TARGET_BUILD_VARIANT=userdebug
-blissify -v lancelot
+
+# Android/Bliss envsetup and blissify use some normal short-lived pipelines.
+# With global "set -Eeo pipefail", their grep/head/sort pipelines can raise
+# SIGPIPE (141) and trigger our ERR trap despite non-fatal operation.
+# Run these functions in a subshell with explicit exit-status checks instead,
+# keeping strict mode enabled in the outer worker script.
+if (
+  set +e
+  set +o pipefail
+  trap - ERR
+  source build/envsetup.sh
+  env_rc=$?
+  if (( env_rc != 0 )); then
+    echo "ERROR: Bliss envsetup returned $env_rc" >&2
+    exit "$env_rc"
+  fi
+  if [[ "$(type -t blissify || true)" != function ]]; then
+    echo 'ERROR: Bliss build function was not loaded by build/envsetup.sh' >&2
+    exit 1
+  fi
+  export TARGET_BUILD_VARIANT=userdebug
+  blissify -v lancelot
+); then
+  echo '==> Bliss compilation returned success'
+else
+  build_rc=$?
+  echo "ERROR: Bliss compilation failed (exit code $build_rc)" >&2
+  exit "$build_rc"
+fi
 
 shopt -s nullglob
 roms=("$OUT_DIR"/Bliss-v20.1-"$DEVICE"-*.zip)
