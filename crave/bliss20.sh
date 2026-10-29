@@ -8,7 +8,7 @@ set -Eeo pipefail
 trap 'echo "[ERROR] Bliss build failed at line $LINENO (status $?)" >&2' ERR
 
 DEVICE=lancelot
-OUT_DIR="out/target/product/$DEVICE"
+PRODUCT_OUT_DIR="out/target/product/$DEVICE"
 BLISS_TAG=refs/tags/v20.1-stable-xylobium
 
 echo '=== Experimental BlissRoms Android 17 build for lancelot ==='
@@ -73,7 +73,7 @@ done
 # Fail early if expected Bliss/Lineage integration points have changed.
 # These paths and modules were checked against Bliss 20.1 Xylobium and
 # LineageOS 24.0; failing clearly is safer than silently broken sed commands.
-echo '==> Checking Bliss/Lineage port prerequisites'
+echo '==> Checking Bliss/Lineage port prerequisites (supports prior patched checkout)'
 for required in \
   device/xiaomi/lancelot/lineage_lancelot.mk \
   device/xiaomi/lancelot/AndroidProducts.mk \
@@ -102,10 +102,24 @@ require_source_text() {
 require_source_text 'aosp_target_release=cp2a' vendor/bliss/vars/aosp_target_release
 require_source_text 'PRODUCT_NAME := lineage_lancelot' device/xiaomi/lancelot/lineage_lancelot.mk
 require_source_text 'vendor/lineage/config/common_full_phone.mk' device/xiaomi/lancelot/lineage_lancelot.mk
-require_source_text 'lineage_lancelot.mk' device/xiaomi/lancelot/AndroidProducts.mk
-require_source_text 'hardware/lineage/interfaces/power-libperfmgr' device/xiaomi/mt6768-common/mt6768.mk
-require_source_text 'device/lineage/sepolicy/libion/sepolicy.mk' device/xiaomi/mt6768-common/BoardConfigCommon.mk
-require_source_text 'vendor/lineage/config/BoardConfigReservedSize.mk' device/xiaomi/mt6768-common/BoardConfigCommon.mk
+# Crave reuses build workers. Previous Bliss attempts can leave the local
+# device checkout already converted; accepting either known state is essential.
+require_one_of_text() {
+  local file="$1" original="$2" converted="$3"
+  if ! grep -Fq -- "$original" "$file" && ! grep -Fq -- "$converted" "$file"; then
+    echo "ERROR: Unexpected upstream content in $file" >&2
+    echo "Expected either: $original OR $converted" >&2
+    exit 1
+  fi
+}
+require_one_of_text device/xiaomi/lancelot/AndroidProducts.mk \
+  'lineage_lancelot.mk' 'bliss_lancelot.mk'
+require_one_of_text device/xiaomi/mt6768-common/mt6768.mk \
+  'hardware/lineage/interfaces/power-libperfmgr' 'hardware/bliss/interfaces/power-libperfmgr'
+require_one_of_text device/xiaomi/mt6768-common/BoardConfigCommon.mk \
+  'device/lineage/sepolicy/libion/sepolicy.mk' 'device/bliss/sepolicy/libion/sepolicy.mk'
+require_one_of_text device/xiaomi/mt6768-common/BoardConfigCommon.mk \
+  'vendor/lineage/config/BoardConfigReservedSize.mk' 'vendor/bliss/config/BoardConfigReservedSize.mk'
 require_source_text 'name: "vendor.lineage.health-service.default"' hardware/bliss/interfaces/health/aidl/default/Android.bp
 require_source_text 'name: "android.hardware.light-service.lineage"' hardware/bliss/interfaces/light/Android.bp
 require_source_text 'name: "android.hardware.power-service.lineage-libperfmgr"' hardware/bliss/interfaces/power-libperfmgr/Android.bp
@@ -168,6 +182,11 @@ if (
     exit 1
   fi
   export TARGET_BUILD_VARIANT=userdebug
+  # Bliss Soong explicitly supports these environment variables. Use lower
+  # concurrency on memory-limited Crave workers to reduce OOM risk.
+  export NINJA_ARGS="${NINJA_ARGS:--j4}"
+  export NINJA_HIGHMEM_NUM_JOBS="${NINJA_HIGHMEM_NUM_JOBS:-1}"
+  echo "Build concurrency: NINJA_ARGS=$NINJA_ARGS; NINJA_HIGHMEM_NUM_JOBS=$NINJA_HIGHMEM_NUM_JOBS"
   blissify -v lancelot
 ); then
   echo '==> Bliss compilation returned success'
@@ -178,8 +197,8 @@ else
 fi
 
 shopt -s nullglob
-roms=("$OUT_DIR"/Bliss-v20.1-"$DEVICE"-*.zip)
-(( ${#roms[@]} > 0 )) || { echo "No Bliss v20.1 ZIP in $OUT_DIR" >&2; exit 1; }
+roms=("$PRODUCT_OUT_DIR"/Bliss-v20.1-"$DEVICE"-*.zip)
+(( ${#roms[@]} > 0 )) || { echo "No Bliss v20.1 ZIP in $PRODUCT_OUT_DIR" >&2; exit 1; }
 # Do not accidentally upload an old ZIP left by a prior run.
 newest_rom="${roms[0]}"
 for candidate in "${roms[@]:1}"; do
@@ -188,9 +207,9 @@ done
 roms=("$newest_rom")
 
 images=()
-[[ ! -f "$OUT_DIR/recovery.img" ]] || images+=("$OUT_DIR/recovery.img")
+[[ ! -f "$PRODUCT_OUT_DIR/recovery.img" ]] || images+=("$PRODUCT_OUT_DIR/recovery.img")
 ls -lh "${roms[@]}" "${images[@]}"
-sha256sum "${roms[@]}" "${images[@]}" | tee "$OUT_DIR/SHA256SUMS-bliss-lancelot.txt"
+sha256sum "${roms[@]}" "${images[@]}" | tee "$PRODUCT_OUT_DIR/SHA256SUMS-bliss-lancelot.txt"
 
 # Optional personal Telegram Saved Messages upload.
 # Account session files must be securely pushed to THIS project's worker.
@@ -206,7 +225,7 @@ if [[ "${TG_AUTO_UPLOAD:-1}" != 0 ]] && \
   fi
   if [[ -n "$tg_bin" ]]; then
     "$tg_bin" --to me --large-files split --force-file \
-      "${roms[@]}" "${images[@]}" "$OUT_DIR/SHA256SUMS-bliss-lancelot.txt" \
+      "${roms[@]}" "${images[@]}" "$PRODUCT_OUT_DIR/SHA256SUMS-bliss-lancelot.txt" \
       || echo 'WARNING: Telegram upload failed; artifacts remain available via crave pull.'
   else
     echo 'WARNING: Telegram uploader unavailable; use crave pull.'
