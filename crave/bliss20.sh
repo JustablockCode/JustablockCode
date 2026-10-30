@@ -160,62 +160,131 @@ require_source_text 'device/bliss/sepolicy/libion/sepolicy.mk' "$COMMON_TREE/Boa
 require_source_text 'vendor/bliss/config/BoardConfigReservedSize.mk' "$COMMON_TREE/BoardConfigCommon.mk"
 require_source_text 'device/bliss/sepolicy/libperfmgr/sepolicy.mk' device/mediatek/sepolicy_vndr/SEPolicy.mk
 
-# Android 17 Soong graph analysis can consume >50 GiB in a single Go process.
-# Ninja -j4 does not limit that process. This is the same soft-heap cap used
-# in the public Android 17 lancelot build by qcom-toolbox:
-# https://github.com/qcom-toolbox/EVOLUTION-X-LANCELOT-17/blob/main/patches/build/soong/0001-soong_build-soft-20G-heap-limit.patch
-# Apply only to the synced Bliss Soong tree, never to the working Lineage clone.
-# The Bliss manifest pins Soong at f4d674a9b9edba3dca3c024bf69f290096523246.
-echo '==> Applying Android 17 Soong 20 GiB soft heap limit'
+# Android 17 Soong graph analysis exhausted the worker memory in build 308274.
+# A Go heap target can reduce memory spikes, but a fixed 20 GiB limit is wrong
+# without knowing the worker's actual RAM/cgroup allocation.
+# Soong runs with a sanitized environment; patch the Go entrypoint itself.
+# Dynamic heap sizing: 60% of the smaller of /proc/meminfo and cgroup limits.
+# Ninja concurrency: CPU allocation, capped by a conservative 3 GiB/job budget.
+# Do not change the known-working Lineage23 script or workspace.
+echo '==> Detecting Crave worker CPU/RAM constraints'
+WORKER_RESOURCES="$(python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+GIB = 1 << 30
+
+def read_positive_int(path):
+    try:
+        val = Path(path).read_text().strip().split()[0]
+        num = int(val)
+        return num if 0 < num < (1 << 60) else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+meminfo = Path('/proc/meminfo').read_text()
+match = re.search(r'^MemTotal:\s*(\d+)\s*kB$', meminfo, re.M)
+if match is None:
+    raise RuntimeError('Cannot determine physical RAM from /proc/meminfo')
+physical = int(match.group(1)) * 1024
+mem_limits = [physical]
+for path in (
+    '/sys/fs/cgroup/memory.max',
+    '/sys/fs/cgroup/memory/memory.limit_in_bytes',
+):
+    limit = read_positive_int(path)
+    if limit is not None:
+        mem_limits.append(limit)
+effective_ram = min(mem_limits)
+
+cores = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else (os.cpu_count() or 1)
+try:
+    quota, period = Path('/sys/fs/cgroup/cpu.max').read_text().strip().split()[:2]
+    if quota != 'max' and int(period) > 0:
+        cores = min(cores, max(1, (int(quota) + int(period) - 1) // int(period)))
+except (OSError, ValueError, IndexError):
+    pass
+v1_quota = read_positive_int('/sys/fs/cgroup/cpu/cpu.cfs_quota_us')
+v1_period = read_positive_int('/sys/fs/cgroup/cpu/cpu.cfs_period_us')
+if v1_quota is not None and v1_period is not None:
+    cores = min(cores, max(1, (v1_quota + v1_period - 1) // v1_period))
+cores = max(1, cores)
+
+# This is a cautious tuning heuristic, not a tested guarantee for all workers.
+ninja_jobs = max(1, min(cores, effective_ram // (3 * GIB)))
+soong_heap_bytes = max(512 * (1 << 20), effective_ram * 60 // 100)
+print(effective_ram, cores, ninja_jobs, soong_heap_bytes)
+PY
+)"
+read -r WORKER_RAM_BYTES WORKER_CPU_CORES WORKER_NINJA_JOBS SOONG_HEAP_BYTES <<< "$WORKER_RESOURCES"
+for value in "$WORKER_RAM_BYTES" "$WORKER_CPU_CORES" "$WORKER_NINJA_JOBS" "$SOONG_HEAP_BYTES"; do
+  [[ "$value" =~ ^[0-9]+$ ]] || { echo 'ERROR: Invalid resource detection output' >&2; exit 1; }
+done
+echo "Worker effective RAM: $(( WORKER_RAM_BYTES / 1073741824 )) GiB (rounded down)"
+echo "Worker effective CPU cores: $WORKER_CPU_CORES"
+echo "Selected Ninja jobs: $WORKER_NINJA_JOBS (auto; not fixed -j4)"
+echo "Selected Soong soft Go heap: $(( SOONG_HEAP_BYTES / 1048576 )) MiB (60% of RAM limit)"
+echo '==> Memory/CPU diagnostics (host values may differ from cgroup allocation)'
+nproc || true
+free -h || true
+for metric in /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.current /sys/fs/cgroup/cpu.max; do
+  if [[ -r "$metric" ]]; then
+    printf '%s: ' "$metric"
+    cat "$metric"
+  fi
+done
+
+# Exact Bliss v20.1 source revision is pinned in the official manifest:
+# build/soong @ f4d674a9b9edba3dca3c024bf69f290096523246.
+# Update only one Go line and import, and accept a previously patched checkout.
+echo '==> Applying RAM-adaptive Android 17 Soong heap protection'
 SOONG_MAIN=build/soong/cmd/soong_build/main.go
 [[ -f "$SOONG_MAIN" ]] || { echo "ERROR: Missing $SOONG_MAIN" >&2; exit 1; }
-SOONG_PATCH_FILE="$(mktemp /tmp/bliss-soong-memory.XXXXXX.patch)"
-cat > "$SOONG_PATCH_FILE" <<'SOONG_PATCH'
-diff --git a/cmd/soong_build/main.go b/cmd/soong_build/main.go
---- a/cmd/soong_build/main.go
-+++ b/cmd/soong_build/main.go
-@@ -22,6 +22,7 @@ import (
- 	"os"
- 	"path/filepath"
- 	"runtime"
-+	"runtime/debug"
- 	"strings"
- 	"time"
- 
-@@ -316,6 +317,10 @@ func parseAvailableEnv() map[string]string {
- func main() {
- 	flag.Parse()
- 
-+	// Cap Go's heap to limit Android 17 Soong memory spikes.
-+	// soong_build runs under env -i, so GOMEMLIMIT cannot be inherited.
-+	debug.SetMemoryLimit(20 << 30)
-+
- 	if cmdlineArgs.Memprofile == "" {
- 		// Go enables memory profile collection automatically if any references
- 		// are linked in to the binary.
-SOONG_PATCH
-if git -C build/soong apply --check "$SOONG_PATCH_FILE"; then
-  git -C build/soong apply "$SOONG_PATCH_FILE"
-  echo 'Soong memory patch applied.'
-elif git -C build/soong apply --reverse --check "$SOONG_PATCH_FILE"; then
-  echo 'Soong memory patch already applied; reusing it.'
-else
-  echo 'ERROR: Soong source differs; refusing an unverified memory patch.' >&2
-  rm -f "$SOONG_PATCH_FILE"
+python3 - "$SOONG_MAIN" "$SOONG_HEAP_BYTES" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+cap = int(sys.argv[2])
+if cap <= 0:
+    raise SystemExit('ERROR: Invalid Soong memory limit')
+
+source = path.read_text()
+import_anchor = '\t"runtime"\n\t"strings"'
+if '\t"runtime/debug"' not in source:
+    if source.count(import_anchor) != 1:
+        raise SystemExit('ERROR: Bliss Soong imports changed; aborting')
+    source = source.replace(import_anchor, '\t"runtime"\n\t"runtime/debug"\n\t"strings"', 1)
+
+anchor = 'func main() {\n\tflag.Parse()\n'
+if source.count(anchor) != 1:
+    raise SystemExit('ERROR: Bliss Soong main() changed; aborting')
+
+new_line = f'\tdebug.SetMemoryLimit({cap})'
+previous = list(re.finditer(r'(?m)^\tdebug\.SetMemoryLimit\([^\n]*\)$', source))
+if len(previous) > 1:
+    raise SystemExit('ERROR: Multiple Soong memory limits; aborting')
+if previous:
+    source = source[:previous[0].start()] + new_line + source[previous[0].end():]
+else:
+    source = source.replace(
+        anchor,
+        anchor + '\n\t// Dynamic Go heap target calculated from worker RAM/cgroup.\n' + new_line + '\n',
+        1,
+    )
+if source.count('debug.SetMemoryLimit(') != 1:
+    raise SystemExit('ERROR: Soong memory patch verification failed')
+path.write_text(source)
+print(f'Soong Go heap target patched to {cap} bytes')
+PY
+grep -Fq '"runtime/debug"' "$SOONG_MAIN" || { echo 'ERROR: Missing Soong debug import' >&2; exit 1; }
+grep -Fq "debug.SetMemoryLimit($SOONG_HEAP_BYTES)" "$SOONG_MAIN" || {
+  echo 'ERROR: Dynamic Soong limit missing after patch' >&2
   exit 1
-fi
-rm -f "$SOONG_PATCH_FILE"
-grep -Fq '"runtime/debug"' "$SOONG_MAIN" || { echo 'Missing Soong debug import' >&2; exit 1; }
-grep -Fq 'debug.SetMemoryLimit(20 << 30)' "$SOONG_MAIN" || {
-  echo 'Soong memory limit missing after patch' >&2; exit 1;
 }
-echo '==> Soong 20 GiB soft heap cap confirmed (RSS may exceed this limit)'
-echo '==> Worker memory diagnostics'
-free -h || true
-if [[ -r /sys/fs/cgroup/memory.max ]]; then
-  printf 'cgroup memory.max: '
-  cat /sys/fs/cgroup/memory.max
-fi
+echo '==> Soong adaptive heap target confirmed (not a hard RSS limit)'
 
 echo '==> Building BlissRoms vanilla (userdebug)'
 # Crave's baseline image intentionally leaves out ccache and ships a passthrough
@@ -254,11 +323,11 @@ if (
     echo 'ERROR: Bliss product configuration failed during breakfast.' >&2
     exit 1
   fi
-  # Bliss Soong explicitly supports these environment variables. Use lower
-  # concurrency on memory-limited Crave workers to reduce OOM risk.
-  export NINJA_ARGS="${NINJA_ARGS:--j4}"
-  export NINJA_HIGHMEM_NUM_JOBS="${NINJA_HIGHMEM_NUM_JOBS:-1}"
-  echo "Build concurrency: NINJA_ARGS=$NINJA_ARGS; NINJA_HIGHMEM_NUM_JOBS=$NINJA_HIGHMEM_NUM_JOBS"
+  # Use limits measured from this actual Crave worker rather than fixed -j4.
+  export NINJA_ARGS="-j$WORKER_NINJA_JOBS"
+  # Allow upstream Soong to select its own high-memory pool size.
+  unset NINJA_HIGHMEM_NUM_JOBS
+  echo "Build concurrency: $NINJA_ARGS; high-memory pool: Soong automatic"
   blissify -v lancelot
 ); then
   echo '==> Bliss compilation returned success'
