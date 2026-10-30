@@ -85,6 +85,8 @@ for required in \
   vendor/bliss/build/envsetup.sh \
   vendor/bliss/build/tasks/blissify.mk \
   device/bliss/sepolicy/libion/sepolicy.mk \
+  device/bliss/sepolicy/libperfmgr/sepolicy.mk \
+  device/mediatek/sepolicy_vndr/SEPolicy.mk \
   hardware/bliss/interfaces/health/aidl/default/Android.bp \
   hardware/bliss/interfaces/light/Android.bp \
   hardware/bliss/interfaces/power-libperfmgr/Android.bp \
@@ -120,6 +122,8 @@ require_one_of_text device/xiaomi/mt6768-common/BoardConfigCommon.mk \
   'device/lineage/sepolicy/libion/sepolicy.mk' 'device/bliss/sepolicy/libion/sepolicy.mk'
 require_one_of_text device/xiaomi/mt6768-common/BoardConfigCommon.mk \
   'vendor/lineage/config/BoardConfigReservedSize.mk' 'vendor/bliss/config/BoardConfigReservedSize.mk'
+require_one_of_text device/mediatek/sepolicy_vndr/SEPolicy.mk \
+  'device/lineage/sepolicy/libperfmgr/sepolicy.mk' 'device/bliss/sepolicy/libperfmgr/sepolicy.mk'
 require_source_text 'name: "vendor.lineage.health-service.default"' hardware/bliss/interfaces/health/aidl/default/Android.bp
 require_source_text 'name: "android.hardware.light-service.lineage"' hardware/bliss/interfaces/light/Android.bp
 require_source_text 'name: "android.hardware.power-service.lineage-libperfmgr"' hardware/bliss/interfaces/power-libperfmgr/Android.bp
@@ -143,6 +147,10 @@ sed -i \
   -e 's|device/lineage/sepolicy/libion/sepolicy.mk|device/bliss/sepolicy/libion/sepolicy.mk|g' \
   -e 's|vendor/lineage/config/BoardConfigReservedSize.mk|vendor/bliss/config/BoardConfigReservedSize.mk|g' \
   "$COMMON_TREE/BoardConfigCommon.mk"
+# MediaTek sepolicy has a separate, mandatory Lineage-specific include.
+# Crave build 308132 failed here before product configuration could complete.
+sed -i 's|device/lineage/sepolicy/libperfmgr/sepolicy.mk|device/bliss/sepolicy/libperfmgr/sepolicy.mk|g' \
+  device/mediatek/sepolicy_vndr/SEPolicy.mk
 
 grep -q 'PRODUCT_NAME := bliss_lancelot' "$PRODUCT_TREE/bliss_lancelot.mk"
 grep -q 'vendor/bliss/config/common_full_phone.mk' "$PRODUCT_TREE/bliss_lancelot.mk"
@@ -150,6 +158,7 @@ grep -q 'bliss_lancelot.mk' "$PRODUCT_TREE/AndroidProducts.mk"
 require_source_text 'hardware/bliss/interfaces/power-libperfmgr' "$COMMON_TREE/mt6768.mk"
 require_source_text 'device/bliss/sepolicy/libion/sepolicy.mk' "$COMMON_TREE/BoardConfigCommon.mk"
 require_source_text 'vendor/bliss/config/BoardConfigReservedSize.mk' "$COMMON_TREE/BoardConfigCommon.mk"
+require_source_text 'device/bliss/sepolicy/libperfmgr/sepolicy.mk' device/mediatek/sepolicy_vndr/SEPolicy.mk
 
 echo '==> Building BlissRoms vanilla (userdebug)'
 # Crave's baseline image intentionally leaves out ccache and ships a passthrough
@@ -182,6 +191,12 @@ if (
     exit 1
   fi
   export TARGET_BUILD_VARIANT=userdebug
+  # Validate the actual Android product configuration before any compilation.
+  # Blissify can otherwise proceed after a failed internal breakfast call.
+  if ! breakfast lancelot; then
+    echo 'ERROR: Bliss product configuration failed during breakfast.' >&2
+    exit 1
+  fi
   # Bliss Soong explicitly supports these environment variables. Use lower
   # concurrency on memory-limited Crave workers to reduce OOM risk.
   export NINJA_ARGS="${NINJA_ARGS:--j4}"
