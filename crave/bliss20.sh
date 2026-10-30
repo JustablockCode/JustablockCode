@@ -160,6 +160,63 @@ require_source_text 'device/bliss/sepolicy/libion/sepolicy.mk' "$COMMON_TREE/Boa
 require_source_text 'vendor/bliss/config/BoardConfigReservedSize.mk' "$COMMON_TREE/BoardConfigCommon.mk"
 require_source_text 'device/bliss/sepolicy/libperfmgr/sepolicy.mk' device/mediatek/sepolicy_vndr/SEPolicy.mk
 
+# Android 17 Soong graph analysis can consume >50 GiB in a single Go process.
+# Ninja -j4 does not limit that process. This is the same soft-heap cap used
+# in the public Android 17 lancelot build by qcom-toolbox:
+# https://github.com/qcom-toolbox/EVOLUTION-X-LANCELOT-17/blob/main/patches/build/soong/0001-soong_build-soft-20G-heap-limit.patch
+# Apply only to the synced Bliss Soong tree, never to the working Lineage clone.
+# The Bliss manifest pins Soong at f4d674a9b9edba3dca3c024bf69f290096523246.
+echo '==> Applying Android 17 Soong 20 GiB soft heap limit'
+SOONG_MAIN=build/soong/cmd/soong_build/main.go
+[[ -f "$SOONG_MAIN" ]] || { echo "ERROR: Missing $SOONG_MAIN" >&2; exit 1; }
+SOONG_PATCH_FILE="$(mktemp /tmp/bliss-soong-memory.XXXXXX.patch)"
+cat > "$SOONG_PATCH_FILE" <<'SOONG_PATCH'
+diff --git a/cmd/soong_build/main.go b/cmd/soong_build/main.go
+--- a/cmd/soong_build/main.go
++++ b/cmd/soong_build/main.go
+@@ -22,6 +22,7 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"runtime"
++	"runtime/debug"
+ 	"strings"
+ 	"time"
+ 
+@@ -316,6 +317,10 @@ func parseAvailableEnv() map[string]string {
+ func main() {
+ 	flag.Parse()
+ 
++	// Cap Go's heap to limit Android 17 Soong memory spikes.
++	// soong_build runs under env -i, so GOMEMLIMIT cannot be inherited.
++	debug.SetMemoryLimit(20 << 30)
++
+ 	if cmdlineArgs.Memprofile == "" {
+ 		// Go enables memory profile collection automatically if any references
+ 		// are linked in to the binary.
+SOONG_PATCH
+if git -C build/soong apply --check "$SOONG_PATCH_FILE"; then
+  git -C build/soong apply "$SOONG_PATCH_FILE"
+  echo 'Soong memory patch applied.'
+elif git -C build/soong apply --reverse --check "$SOONG_PATCH_FILE"; then
+  echo 'Soong memory patch already applied; reusing it.'
+else
+  echo 'ERROR: Soong source differs; refusing an unverified memory patch.' >&2
+  rm -f "$SOONG_PATCH_FILE"
+  exit 1
+fi
+rm -f "$SOONG_PATCH_FILE"
+grep -Fq '"runtime/debug"' "$SOONG_MAIN" || { echo 'Missing Soong debug import' >&2; exit 1; }
+grep -Fq 'debug.SetMemoryLimit(20 << 30)' "$SOONG_MAIN" || {
+  echo 'Soong memory limit missing after patch' >&2; exit 1;
+}
+echo '==> Soong 20 GiB soft heap cap confirmed (RSS may exceed this limit)'
+echo '==> Worker memory diagnostics'
+free -h || true
+if [[ -r /sys/fs/cgroup/memory.max ]]; then
+  printf 'cgroup memory.max: '
+  cat /sys/fs/cgroup/memory.max
+fi
+
 echo '==> Building BlissRoms vanilla (userdebug)'
 # Crave's baseline image intentionally leaves out ccache and ships a passthrough
 # replacement. Bliss 20.1 checks CCACHE_EXEC when sourcing envsetup.sh.
