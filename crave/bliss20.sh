@@ -323,11 +323,13 @@ if (
     echo 'ERROR: Bliss product configuration failed during breakfast.' >&2
     exit 1
   fi
-  # Use limits measured from this actual Crave worker rather than fixed -j4.
-  export NINJA_ARGS="-j$WORKER_NINJA_JOBS"
-  # Allow upstream Soong to select its own high-memory pool size.
-  unset NINJA_HIGHMEM_NUM_JOBS
-  echo "Build concurrency: $NINJA_ARGS; high-memory pool: Soong automatic"
+  # Bliss Android 17 uses Siso by default. It rejects Ninja's "-j16"
+  # when passed through NINJA_ARGS (Crave build 308387). Soong itself
+  # supplies Siso's --local_jobs using its detected worker CPU allocation.
+  # Use the upstream scheduler rather than injecting raw Ninja-only flags.
+  unset NINJA_ARGS NINJA_EXTRA_ARGS NINJA_HIGHMEM_NUM_JOBS
+  echo "Build concurrency: Bliss/Soong automatic (Siso --local_jobs); worker CPUs: $WORKER_CPU_CORES"
+  echo "RAM-based reference (not passed to Siso): $WORKER_NINJA_JOBS jobs"
   blissify -v lancelot
 ); then
   echo '==> Bliss compilation returned success'
